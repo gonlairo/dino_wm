@@ -1,0 +1,19 @@
+name: dino_wm_minimal
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - pip
+  - numpy==1.26.4
+  - torch==2.3.0
+  - torchvision==0.18.0
+  - einops==0.4.1
+  - hydra-core
+  - omegaconf==2.3.0
+  - accelerate
+  - pillow
+  - pip:
+      - gym==0.23.1
+  - tqdm
+  - cloudpickle
+  - wandb==0.13.1
