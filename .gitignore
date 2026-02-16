@@ -1,5 +1,7 @@
 __pycache__
 *.pyc
 *.pth
+*.err
+*.out
 outputs
 plan_outputs
