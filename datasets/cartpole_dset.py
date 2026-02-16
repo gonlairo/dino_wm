@@ -45,10 +45,12 @@ class CartpoleEpisodeDirDataset(TrajDataset):
         transform: Optional[Callable] = None,
         normalize_action: bool = True,
         action_scale: float = 1.0,
+        use_proprio: bool = True,
     ):
         self.data_path = Path(data_path)
         self.transform = transform
         self.normalize_action = normalize_action
+        self.use_proprio = use_proprio
 
         paths = sorted(
             self.data_path.glob(episode_pattern),
@@ -97,14 +99,19 @@ class CartpoleEpisodeDirDataset(TrajDataset):
             else:
                 states = torch.as_tensor(states).float()
             T = seq_lengths[i].item()
-            self.proprios[i, :T] = proprio
+            if use_proprio:
+                self.proprios[i, :T] = proprio
             self.actions[i, :T] = actions / action_scale
             self.states[i, :T] = states
 
         self.seq_lengths = seq_lengths
         self.action_dim = action_dim
         self.state_dim = state_dim
-        self.proprio_dim = proprio_dim
+        if use_proprio:
+            self.proprio_dim = proprio_dim
+        else:
+            self.proprios = torch.zeros(n, max_T, 1, dtype=torch.float32)
+            self.proprio_dim = 1
 
         if normalize_action:
             self.action_mean, self.action_std = self.get_data_mean_std(
@@ -123,7 +130,8 @@ class CartpoleEpisodeDirDataset(TrajDataset):
 
         self.actions = (self.actions - self.action_mean) / self.action_std
         self.proprios = (self.proprios - self.proprio_mean) / self.proprio_std
-        print(f"Loaded {n} episodes from {self.data_path} (episode_*.pth)")
+        print(f"Loaded {n} episodes from {self.data_path} (episode_*.pth)" +
+              (" [proprio disabled]" if not use_proprio else ""))
 
     def get_data_mean_std(self, data: torch.Tensor, traj_lengths: torch.Tensor):
         all_data = []
@@ -175,6 +183,7 @@ def load_cartpole_episode_dir_slice_train_val(
     num_pred: int = 0,
     frameskip: int = 0,
     action_scale: float = 1.0,
+    use_proprio: bool = True,
 ):
     """Load cartpole-style data from per-episode files (episode_0001.pth, etc.)."""
     dset = CartpoleEpisodeDirDataset(
@@ -184,6 +193,7 @@ def load_cartpole_episode_dir_slice_train_val(
         transform=transform,
         normalize_action=normalize_action,
         action_scale=action_scale,
+        use_proprio=use_proprio,
     )
     dset_train, dset_val, train_slices, val_slices = get_train_val_sliced(
         traj_dataset=dset,

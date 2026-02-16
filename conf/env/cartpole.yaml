@@ -2,15 +2,17 @@ name: cartpole
 args: []
 kwargs: {}
 
+# Per-episode files: data_path/episode_0001.pth, episode_0002.pth, ...
+# Each file: images (T, C, H, W), proprio (T, D_p), actions (T, D_a)
 dataset:
-  _target_: "datasets.cartpole_dset.load_cartpole_slice_train_val"
+  _target_: "datasets.cartpole_dset.load_cartpole_episode_dir_slice_train_val"
   n_rollout: null
   normalize_action: ${normalize_action}
   data_path: ${oc.env:DATASET_DIR}/cartpole
-  data_file: episodes.pth
-  episode_len: 500
+  episode_pattern: "episode_*.pth"
   split_ratio: 0.9
   action_scale: 1.0
+  use_proprio: true  # set false to train without proprio (dummy zeros)
   transform:
     _target_: "datasets.img_transforms.default_transform"
     img_size: ${img_size}
