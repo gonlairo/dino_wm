@@ -20,7 +20,8 @@ BASE_OUT="$(pwd)/outputs/cartpole_dino_wm_job${SLURM_JOB_ID}"
 SLURM_LOGS="$BASE_OUT/slurm"
 mkdir -p "$BASE_OUT/resnet64x64_with_proprio" "$BASE_OUT/resnet64x64_without_proprio" "$BASE_OUT/dino224x224_with_proprio" "$BASE_OUT/dino224x224_without_proprio" "$SLURM_LOGS"
 
-export WANDB_MODE=online
+WANDB_MODE=offline
+export WANDB_MODE
 export WANDB_API_KEY=$(cat "/p/home/jusers/gonzalezlaiz1/juwels/project/repos/world-models-interp/.wandb_api_key")
 
 source .venv/bin/activate
@@ -33,7 +34,7 @@ DATA_DIR_224x224="/p/home/jusers/gonzalezlaiz1/juwels/project/dino_wm_osf/osfsto
 # 64x64, ResNet, use_proprio=true
 srun --exclusive -n 1 --gres=gpu:1 \
   env WANDB_API_KEY="$WANDB_API_KEY" \
-  WANDB_MODE=online \
+  WANDB_MODE="$WANDB_MODE" \
   python train.py \
   --config-name train_local.yaml \
   env=cartpole \
@@ -55,7 +56,7 @@ srun --exclusive -n 1 --gres=gpu:1 \
 # 64x64, ResNet, use_proprio=false
 srun --exclusive -n 1 --gres=gpu:1 \
   env WANDB_API_KEY="$WANDB_API_KEY" \
-  WANDB_MODE=online \
+  WANDB_MODE="$WANDB_MODE" \
   python train.py \
   --config-name train_local.yaml \
   env=cartpole \
@@ -80,7 +81,7 @@ srun --exclusive -n 1 --gres=gpu:1 \
 # 224x224, DINO, use_proprio=true
 srun --exclusive -n 1 --gres=gpu:1 \
   env WANDB_API_KEY="$WANDB_API_KEY" \
-  WANDB_MODE=online \
+  WANDB_MODE="$WANDB_MODE" \
   python train.py \
   --config-name train_local.yaml \
   env=cartpole \
@@ -99,7 +100,7 @@ srun --exclusive -n 1 --gres=gpu:1 \
 # 224x224, DINO, use_proprio=false
 srun --exclusive -n 1 --gres=gpu:1 \
   env WANDB_API_KEY="$WANDB_API_KEY" \
-  WANDB_MODE=online \
+  WANDB_MODE="$WANDB_MODE" \
   python train.py \
   --config-name train_local.yaml \
   env=cartpole \
