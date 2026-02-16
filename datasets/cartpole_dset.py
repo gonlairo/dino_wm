@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from pathlib import Path
-from typing import Callable, Optional, Dict, Any, Tuple
+from typing import Callable, Optional, Dict, Any, Tuple, List
 from einops import rearrange
 
 from .traj_dset import TrajDataset, get_train_val_sliced
@@ -14,21 +14,33 @@ def _get_key(data: Dict[str, Any], keys: Tuple[str, ...]):
     return None
 
 
-class CartpoleEpisodeDataset(TrajDataset):
+def _natural_sort_key(p: Path) -> Tuple[int, ...]:
+    """Sort episode_0001.pth, episode_0002.pth, ... by numeric part."""
+    stem = p.stem
+    if stem.startswith("episode_"):
+        try:
+            return (int(stem.split("_")[1]),)
+        except (IndexError, ValueError):
+            pass
+    return (0,)
+
+
+class CartpoleEpisodeDirDataset(TrajDataset):
     """
-    Minimal dataset for a single long sequence.
-    Expected keys in the file:
-      - images / visual / obses: (T, C, H, W)
-      - proprio: (T, D_p)
-      - actions: (T, D_a)
-      - states: optional (T, D_s)
+    Dataset where each episode is stored in a separate file:
+      data_path/episode_0001.pth, episode_0002.pth, ...
+
+    Each file must contain:
+      - 'images': (T, C, H, W)
+      - 'proprio': (T, D_p)
+      - 'actions': (T, D_a)
+    Optional: 'states' (T, D_s); if missing, state = proprio.
     """
 
     def __init__(
         self,
         data_path: str = "data/cartpole",
-        data_file: str = "episodes.pth",
-        episode_len: int = 500,
+        episode_pattern: str = "episode_*.pth",
         n_rollout: Optional[int] = None,
         transform: Optional[Callable] = None,
         normalize_action: bool = True,
@@ -38,52 +50,61 @@ class CartpoleEpisodeDataset(TrajDataset):
         self.transform = transform
         self.normalize_action = normalize_action
 
-        data = torch.load(self.data_path / data_file)
-        images = _get_key(data, ("images", "visual", "obses"))
-        proprios = _get_key(data, ("proprio", "proprios"))
-        actions = _get_key(data, ("actions", "acts"))
-        states = _get_key(data, ("states", "state"))
-        if images is None or proprios is None or actions is None:
-            raise ValueError(
-                "Expected keys in data file: images/visual/obses, proprio, actions."
-            )
+        paths = sorted(
+            self.data_path.glob(episode_pattern),
+            key=_natural_sort_key,
+        )
+        if not paths:
+            raise FileNotFoundError(
+                f"No episodes found at {self.data_path / episode_pattern}")
+
+        self.episode_paths: List[Path] = paths
+        if n_rollout is not None:
+            self.episode_paths = self.episode_paths[:n_rollout]
+        n = len(self.episode_paths)
+
+        # Load first episode to get dims and max length
+        sample = torch.load(self.episode_paths[0])
+        images = _get_key(sample, ("images", "visual", "obses"))
+        proprio = _get_key(sample, ("proprio", "proprios"))
+        actions = _get_key(sample, ("actions", "acts"))
+        states = _get_key(sample, ("states", "state"))
 
         images = torch.as_tensor(images)
-        proprios = torch.as_tensor(proprios)
-        actions = torch.as_tensor(actions)
-        states = torch.as_tensor(
-            states) if states is not None else proprios.clone()
+        state_dim = torch.as_tensor(proprio).shape[-1]
+        action_dim = torch.as_tensor(actions).shape[-1]
+        proprio_dim = state_dim
 
-        if images.ndim != 4:
-            raise ValueError(
-                f"Expected images shape (T, C, H, W), got {images.shape}")
-        if images.shape[0] % episode_len != 0:
-            raise ValueError(
-                f"Total T {images.shape[0]} not divisible by episode_len {episode_len}"
-            )
-        num_episodes = images.shape[0] // episode_len
-        images = images.view(num_episodes, episode_len, *images.shape[1:])
-        proprios = proprios.view(num_episodes, episode_len, -1)
-        actions = actions.view(num_episodes, episode_len, -1)
-        states = states.view(num_episodes, episode_len, -1)
-        seq_lengths = torch.full((num_episodes,), episode_len, dtype=torch.long)
+        seq_lengths_list: List[int] = []
+        for p in self.episode_paths:
+            data = torch.load(p)
+            T = data["images"].shape[0]
+            seq_lengths_list.append(T)
+        seq_lengths = torch.tensor(seq_lengths_list, dtype=torch.long)
+        max_T = int(seq_lengths.max().item())
 
-        if n_rollout is not None:
-            images = images[:n_rollout]
-            proprios = proprios[:n_rollout]
-            actions = actions[:n_rollout]
-            states = states[:n_rollout]
-            seq_lengths = seq_lengths[:n_rollout]
+        self.states = torch.zeros(n, max_T, state_dim, dtype=torch.float32)
+        self.actions = torch.zeros(n, max_T, action_dim, dtype=torch.float32)
+        self.proprios = torch.zeros(n, max_T, proprio_dim, dtype=torch.float32)
 
-        self.images = images.float()
-        self.proprios = proprios.float()
-        self.actions = actions.float() / action_scale
-        self.states = states.float()
+        for i, p in enumerate(self.episode_paths):
+            data = torch.load(p)
+            proprio = torch.as_tensor(data["proprio"]).float()
+            actions = torch.as_tensor(data["actions"]).float()
+            states = _get_key(data, ("states", "state"))
+            if states is None:
+                states = proprio
+            else:
+                states = torch.as_tensor(states).float()
+            T = seq_lengths[i].item()
+            self.proprios[i, :T] = proprio
+            self.actions[i, :T] = actions / action_scale
+            self.states[i, :T] = states
+
         self.seq_lengths = seq_lengths
-
-        self.action_dim = self.actions.shape[-1]
-        self.state_dim = self.states.shape[-1]
-        self.proprio_dim = self.proprios.shape[-1]
+        self.action_dim = action_dim
+        self.state_dim = state_dim
+        self.proprio_dim = proprio_dim
 
         if normalize_action:
             self.action_mean, self.action_std = self.get_data_mean_std(
@@ -102,13 +123,13 @@ class CartpoleEpisodeDataset(TrajDataset):
 
         self.actions = (self.actions - self.action_mean) / self.action_std
         self.proprios = (self.proprios - self.proprio_mean) / self.proprio_std
+        print(f"Loaded {n} episodes from {self.data_path} (episode_*.pth)")
 
-    def get_data_mean_std(self, data, traj_lengths):
+    def get_data_mean_std(self, data: torch.Tensor, traj_lengths: torch.Tensor):
         all_data = []
         for traj in range(len(traj_lengths)):
-            traj_len = int(traj_lengths[traj])
-            traj_data = data[traj, :traj_len]
-            all_data.append(traj_data)
+            traj_len = int(traj_lengths[traj].item())
+            all_data.append(data[traj, :traj_len])
         all_data = torch.vstack(all_data)
         data_mean = torch.mean(all_data, dim=0)
         data_std = torch.std(all_data, dim=0)
@@ -116,47 +137,50 @@ class CartpoleEpisodeDataset(TrajDataset):
                                data_std)
         return data_mean, data_std
 
-    def get_seq_length(self, idx):
-        return int(self.seq_lengths[idx])
+    def get_seq_length(self, idx: int) -> int:
+        return int(self.seq_lengths[idx].item())
 
-    def get_frames(self, idx, frames):
-        image = self.images[idx, frames]
-        image = image / 255.0 if image.max() > 1.0 else image
-        if image.ndim == 4 and image.shape[-1] == 3:
-            image = rearrange(image, "t h w c -> t c h w")
+    def get_frames(self, idx: int, frames):
+        path = self.episode_paths[idx]
+        data = torch.load(path)
+        images = torch.as_tensor(data["images"])
+        images = images[frames]
+        images = images.float() / 255.0 if images.max() > 1.0 else images.float(
+        )
+        assert images.shape[
+            1] == 3, f"Expected images shape (T, 3, H, W), got {images.shape}"
         if self.transform:
-            image = self.transform(image)
+            images = self.transform(images)
         proprio = self.proprios[idx, frames]
         act = self.actions[idx, frames]
         state = self.states[idx, frames]
-        obs = {"visual": image, "proprio": proprio}
+        obs = {"visual": images, "proprio": proprio}
         return obs, act, state, {}
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int):
         return self.get_frames(idx, range(self.get_seq_length(idx)))
 
-    def __len__(self):
-        return len(self.seq_lengths)
+    def __len__(self) -> int:
+        return len(self.episode_paths)
 
 
-def load_cartpole_slice_train_val(
-    transform,
-    n_rollout=None,
-    data_path="data/cartpole",
-    data_file="episodes.pth",
-    episode_len=500,
-    normalize_action=True,
-    split_ratio=0.9,
-    num_hist=0,
-    num_pred=0,
-    frameskip=0,
-    action_scale=1.0,
+def load_cartpole_episode_dir_slice_train_val(
+    transform: Callable,
+    n_rollout: Optional[int] = None,
+    data_path: str = "data/cartpole",
+    episode_pattern: str = "episode_*.pth",
+    normalize_action: bool = True,
+    split_ratio: float = 0.9,
+    num_hist: int = 0,
+    num_pred: int = 0,
+    frameskip: int = 0,
+    action_scale: float = 1.0,
 ):
-    dset = CartpoleEpisodeDataset(
-        n_rollout=n_rollout,
+    """Load cartpole-style data from per-episode files (episode_0001.pth, etc.)."""
+    dset = CartpoleEpisodeDirDataset(
         data_path=data_path,
-        data_file=data_file,
-        episode_len=episode_len,
+        episode_pattern=episode_pattern,
+        n_rollout=n_rollout,
         transform=transform,
         normalize_action=normalize_action,
         action_scale=action_scale,
@@ -167,7 +191,6 @@ def load_cartpole_slice_train_val(
         num_frames=num_hist + num_pred,
         frameskip=frameskip,
     )
-
     datasets = {"train": train_slices, "valid": val_slices}
     traj_dset = {"train": dset_train, "valid": dset_val}
     return datasets, traj_dset
