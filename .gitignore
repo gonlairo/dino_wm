@@ -3,5 +3,6 @@ __pycache__
 *.pth
 *.err
 *.out
+*.github_token
 outputs
 plan_outputs
